@@ -15,15 +15,15 @@ ANIME_DATA = {
         "Anime": {
             # Send a video to your bot to get these long ID strings!
             "Episode 1": "921260484", 
-            "Episode 2": "BAACAgIAAxkBAA...",
+            "Episode 2": "921260484",
         },
         "Manga": {
-            "Chapter 1": "https://link-to-manga.com",
+            "Chapter 1": "921260484",
         }
     },
     "Naruto": {
         "Anime": {
-            "Episode 1": "BAACAgIAAxkBAA...",
+            "Episode 1": "921260484",
         }
     }
 }
@@ -128,6 +128,7 @@ app.add_handler(MessageHandler(filters.VIDEO | filters.DOCUMENT, get_file_id))
 
 print("Bot is running...")
 app.run_polling()
+
 
 
 
