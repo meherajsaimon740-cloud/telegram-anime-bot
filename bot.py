@@ -121,18 +121,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # ===== SELECT EPISODE =====
-    elif data.startswith("ep_"):
-        parts = data.split("_", 3)
-        anime_name = parts[1]
-        category = parts[2]
-        episode = parts[3]
+   # ===== SELECT EPISODE =====
+elif data.startswith("ep_"):
+    parts = data.split("_", 3)
+    anime_name = parts[1]
+    category = parts[2]
+    episode = parts[3]
 
-        link = ANIME_DATA[anime_name][category][episode]
+    file_id = ANIME_DATA[anime_name][category][episode]
 
-        await message.reply_text(
-            f"🎬 {anime_name}\n📂 {category}\n📺 {episode}\n\n🔗 {link}"
-        )
+    await message.reply_video(
+        video=file_id,
+        caption=f"🎬 {anime_name}\n📂 {category}\n📺 {episode}"
+    )
 
 # ===============================
 # RUN BOT
@@ -142,6 +143,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
 app.run_polling()
+
 
 
 
