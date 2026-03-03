@@ -121,7 +121,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-   # ===== SELECT EPISODE =====
+  # ===== SELECT EPISODE =====
 elif data.startswith("ep_"):
     parts = data.split("_", 3)
     anime_name = parts[1]
@@ -130,15 +130,8 @@ elif data.startswith("ep_"):
 
     link = ANIME_DATA[anime_name][category][episode]
 
-    # Create "Watch Video" button
-    keyboard = [
-        [InlineKeyboardButton("▶ Watch Video", url=link)],
-        [InlineKeyboardButton("⬅ Back", callback_data=f"cat_{anime_name}_{category}")]
-    ]
-
-    await message.edit_text(
-        f"🎬 {anime_name}\n📂 {category}\n📺 {episode}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    await message.reply_text(
+        f"🎬 {anime_name}\n📂 {category}\n📺 {episode}\n\n🔗 {link}"
     )
 
 # ===============================
@@ -149,6 +142,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
 app.run_polling()
+
 
 
 
