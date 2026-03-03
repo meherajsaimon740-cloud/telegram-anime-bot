@@ -121,18 +121,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-  # ===== SELECT EPISODE =====
-elif data.startswith("ep_"):
-    parts = data.split("_", 3)
-    anime_name = parts[1]
-    category = parts[2]
-    episode = parts[3]
+    # ===== SELECT EPISODE =====
+    elif data.startswith("ep_"):
+        parts = data.split("_", 3)
+        anime_name = parts[1]
+        category = parts[2]
+        episode = parts[3]
 
-    link = ANIME_DATA[anime_name][category][episode]
+        link = ANIME_DATA[anime_name][category][episode]
 
-    await message.reply_text(
-        f"🎬 {anime_name}\n📂 {category}\n📺 {episode}\n\n🔗 {link}"
-    )
+        # ✅ Replace text link with clickable "Watch Video" button
+        keyboard = [
+            [InlineKeyboardButton("▶ Watch Video", url=link)],
+            [InlineKeyboardButton("⬅ Back", callback_data=f"cat_{anime_name}_{category}")]
+        ]
+
+        await message.edit_text(
+            f"🎬 {anime_name}\n📂 {category}\n📺 {episode}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 # ===============================
 # RUN BOT
