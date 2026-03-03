@@ -14,7 +14,7 @@ ANIME_DATA = {
             "Episode 2": "Link OP Manga 2",
         },
         "Anime": {
-            "Episode 1": "Link OP Anime 1",
+            "Episode 1": "https://t.me/Uuhuuuuju_bot?start=BQADAQAD6A0AAhuCOUXNmIeR_tLz4BYE",
             "Episode 2": "Link OP Anime 2",
         },
         "Live Action": {
@@ -142,6 +142,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
 app.run_polling()
+
 
 
 
