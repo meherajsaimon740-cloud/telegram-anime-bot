@@ -131,7 +131,7 @@ class MediaDatabase:
 db = MediaDatabase()
 
 # Bot configuration
-BOT_TOKEN = 'YOUR_BOT_TOKEN_HERE'  # Replace with your bot token
+BOT_TOKEN = '8074691861:AAFti_NIEmQj3HRwgT8UHSBio4_9qwkDFac'  # Replace with your bot token
 
 # Sample data to populate the database
 def add_sample_data():
@@ -483,6 +483,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
