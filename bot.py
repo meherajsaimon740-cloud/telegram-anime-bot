@@ -11,7 +11,7 @@ TOKEN = "8074691861:AAFti_NIEmQj3HRwgT8UHSBio4_9qwkDFac"
 ANIME_DATA = {
     "One Piece": {
         "Manga": {
-            "Episode 1": "AAMCAQADGQEAAUO3EGmm6TyVXri5IkhBjK98c_JzdfkiAAKkBQACx7EQRHVKmzYurr41AQAHbQADOgQ",
+            "Episode 1": "BAACAgQAAxkBAAFDuKxppvjoU4VgFjl3RIYX-Lz599FBGgACixYAAuqpuFAwTTo6ZVkbTjoE",
         },
         "Anime": {},
         "Live Action": {}
@@ -127,6 +127,7 @@ app.add_handler(CallbackQueryHandler(button_handler))
 
 print("✅ Bot is running...")
 app.run_polling()
+
 
 
 
