@@ -1,6 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
+# 🔐 PUT YOUR NEW TOKEN HERE
 TOKEN = "8074691861:AAFti_NIEmQj3HRwgT8UHSBio4_9qwkDFac"
 
 # ===============================
@@ -11,28 +12,9 @@ ANIME_DATA = {
     "One Piece": {
         "Manga": {
             "Episode 1": "AAMCAQADGQEAAUO3EGmm6TyVXri5IkhBjK98c_JzdfkiAAKkBQACx7EQRHVKmzYurr41AQAHbQADOgQ",
-            "Episode 2": "Link OP Manga 2",
         },
-        "Anime": {
-            "Episode 1": "Link OP Anime 1",
-            "Episode 2": "Link OP Anime 2",
-        },
-        "Live Action": {
-            "Episode 1": "Link OP Live 1",
-            "Episode 2": "Link OP Live 2",
-        }
-    },
-    "Naruto": {
-        "Manga": {
-            "Episode 1": "Link Naruto Manga 1",
-        },
-        "Anime": {
-            "Episode 1": "Link Naruto Anime 1",
-            "Episode 2": "Link Naruto Anime 2",
-        },
-        "Live Action": {
-            "Episode 1": "Link Naruto Live 1",
-        }
+        "Anime": {},
+        "Live Action": {}
     }
 }
 
@@ -100,7 +82,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # ===== SELECT CATEGORY (Manga / Anime / Live Action) =====
+    # ===== SELECT CATEGORY =====
     elif data.startswith("cat_"):
         parts = data.split("_", 2)
         anime_name = parts[1]
@@ -121,19 +103,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-   # ===== SELECT EPISODE =====
+    # ===== SELECT EPISODE =====
     elif data.startswith("ep_"):
-    parts = data.split("_", 3)
-    anime_name = parts[1]
-    category = parts[2]
-    episode = parts[3]
+        parts = data.split("_", 3)
+        anime_name = parts[1]
+        category = parts[2]
+        episode = parts[3]
 
-    file_id = ANIME_DATA[anime_name][category][episode]
+        file_id = ANIME_DATA[anime_name][category][episode]
 
-    await message.reply_video(
-        video=file_id,
-        caption=f"🎬 {anime_name}\n📂 {category}\n📺 {episode}"
-    )
+        await message.reply_video(
+            video=file_id,
+            caption=f"🎬 {anime_name}\n📂 {category}\n📺 {episode}"
+        )
 
 # ===============================
 # RUN BOT
@@ -142,12 +124,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
+
+print("✅ Bot is running...")
 app.run_polling()
-
-
-
-
-
 
 
 
