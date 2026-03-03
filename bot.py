@@ -3,11 +3,12 @@ from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import math
-import re
+import os
+import asyncio
 
 # Database setup
 class MediaDatabase:
-    def __init__(self, db_name='media_bot.db'):
+    def __init__(self, db_name='anime_bot.db'):
         self.conn = sqlite3.connect(db_name, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self.create_tables()
@@ -38,7 +39,7 @@ class MediaDatabase:
             )
         ''')
         
-        # Anime Episodes table with video support
+        # Anime Episodes table with Telegram File ID support
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS anime_episodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,84 +49,12 @@ class MediaDatabase:
                 description TEXT,
                 air_date TEXT,
                 filler BOOLEAN DEFAULT 0,
-                video_url TEXT,
-                video_file_id TEXT,
-                channel_username TEXT,
-                channel_message_id INTEGER,
-                streaming_url TEXT,
-                FOREIGN KEY (anime_id) REFERENCES anime (id)
-            )
-        ''')
-        
-        # Video sources table (for multiple sources per episode)
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS video_sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                episode_id INTEGER,
-                source_type TEXT CHECK(source_type IN ('direct', 'telegram', 'streaming', 'torrent')),
-                source_url TEXT,
-                quality TEXT,
-                language TEXT,
-                FOREIGN KEY (episode_id) REFERENCES anime_episodes (id)
-            )
-        ''')
-        
-        # Telegram channels table
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS telegram_channels (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_username TEXT UNIQUE,
-                channel_title TEXT,
-                description TEXT,
-                episode_range_start INTEGER,
-                episode_range_end INTEGER,
-                last_checked TIMESTAMP
-            )
-        ''')
-        
-        # Movies table
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS movies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT,
-                rating REAL,
+                telegram_file_id TEXT,
+                thumbnail_file_id TEXT,
                 duration INTEGER,
-                genre TEXT,
-                release_year INTEGER,
-                image_url TEXT,
-                video_url TEXT,
-                video_file_id TEXT
-            )
-        ''')
-        
-        # TV Shows table
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tv_shows (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT,
-                rating REAL,
-                seasons INTEGER,
-                episodes_per_season INTEGER,
-                status TEXT DEFAULT 'Ongoing',
-                image_url TEXT
-            )
-        ''')
-        
-        # TV Show Episodes table
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tv_episodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                show_id INTEGER,
-                season_number INTEGER,
-                episode_number INTEGER,
-                title TEXT,
-                description TEXT,
-                air_date TEXT,
-                video_url TEXT,
-                video_file_id TEXT,
-                FOREIGN KEY (show_id) REFERENCES tv_shows (id)
+                file_size INTEGER,
+                upload_date TIMESTAMP,
+                FOREIGN KEY (anime_id) REFERENCES anime (id)
             )
         ''')
         
@@ -142,14 +71,17 @@ class MediaDatabase:
             )
         ''')
         
-        # User video preferences
+        # Upload queue table for batch uploads
         self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_preferences (
-                user_id INTEGER PRIMARY KEY,
-                preferred_quality TEXT DEFAULT '720p',
-                preferred_language TEXT DEFAULT 'sub',
-                auto_play BOOLEAN DEFAULT 0,
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            CREATE TABLE IF NOT EXISTS upload_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                anime_id INTEGER,
+                episode_number INTEGER,
+                file_path TEXT,
+                status TEXT DEFAULT 'pending',
+                upload_attempts INTEGER DEFAULT 0,
+                last_attempt TIMESTAMP,
+                FOREIGN KEY (anime_id) REFERENCES anime (id)
             )
         ''')
         
@@ -160,12 +92,6 @@ class MediaDatabase:
             INSERT OR REPLACE INTO users (user_id, username, first_name, joined_date, last_active)
             VALUES (?, ?, ?, ?, ?)
         ''', (user_id, username, first_name, datetime.now(), datetime.now()))
-        self.conn.commit()
-        
-        # Create user preferences if not exists
-        self.cursor.execute('''
-            INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?)
-        ''', (user_id,))
         self.conn.commit()
     
     def update_last_active(self, user_id):
@@ -206,51 +132,14 @@ class MediaDatabase:
         ''', (episode_id,))
         return self.cursor.fetchone()
     
-    def get_episode_video_sources(self, episode_id):
-        """Get all video sources for an episode"""
-        self.cursor.execute('''
-            SELECT * FROM video_sources WHERE episode_id = ? ORDER BY 
-            CASE source_type
-                WHEN 'direct' THEN 1
-                WHEN 'telegram' THEN 2
-                WHEN 'streaming' THEN 3
-                ELSE 4
-            END
-        ''', (episode_id,))
-        return self.cursor.fetchall()
-    
-    def add_video_source(self, episode_id, source_type, source_url, quality='720p', language='sub'):
-        """Add a video source for an episode"""
-        self.cursor.execute('''
-            INSERT INTO video_sources (episode_id, source_type, source_url, quality, language)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (episode_id, source_type, source_url, quality, language))
-        self.conn.commit()
-    
-    def update_video_file_id(self, episode_id, file_id):
+    def update_episode_telegram_file_id(self, episode_id, file_id, thumbnail_id=None, duration=None, file_size=None):
         """Store Telegram file_id after sending video"""
         self.cursor.execute('''
-            UPDATE anime_episodes SET video_file_id = ? WHERE id = ?
-        ''', (file_id, episode_id))
+            UPDATE anime_episodes 
+            SET telegram_file_id = ?, thumbnail_file_id = ?, duration = ?, file_size = ?, upload_date = ?
+            WHERE id = ?
+        ''', (file_id, thumbnail_id, duration, file_size, datetime.now(), episode_id))
         self.conn.commit()
-    
-    def add_telegram_channel(self, channel_username, channel_title, description, 
-                            ep_start, ep_end):
-        """Add a Telegram channel as video source"""
-        self.cursor.execute('''
-            INSERT OR REPLACE INTO telegram_channels 
-            (channel_username, channel_title, description, episode_range_start, episode_range_end, last_checked)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (channel_username, channel_title, description, ep_start, ep_end, datetime.now()))
-        self.conn.commit()
-    
-    def get_channels_for_episode(self, episode_number):
-        """Find channels that have this episode"""
-        self.cursor.execute('''
-            SELECT * FROM telegram_channels 
-            WHERE episode_range_start <= ? AND episode_range_end >= ?
-        ''', (episode_number, episode_number))
-        return self.cursor.fetchall()
     
     def update_user_progress(self, user_id, anime_id, episode):
         self.cursor.execute('''
@@ -267,79 +156,49 @@ class MediaDatabase:
         result = self.cursor.fetchone()
         return result[0] if result else 0
     
-    def get_user_preferences(self, user_id):
+    # Upload queue methods
+    def add_to_upload_queue(self, anime_id, episode_number, file_path):
         self.cursor.execute('''
-            SELECT preferred_quality, preferred_language, auto_play 
-            FROM user_preferences WHERE user_id = ?
-        ''', (user_id,))
-        return self.cursor.fetchone()
+            INSERT INTO upload_queue (anime_id, episode_number, file_path, status)
+            VALUES (?, ?, ?, ?)
+        ''', (anime_id, episode_number, file_path, 'pending'))
+        self.conn.commit()
+        return self.cursor.lastrowid
+    
+    def get_pending_uploads(self, limit=10):
+        self.cursor.execute('''
+            SELECT * FROM upload_queue 
+            WHERE status = 'pending' OR (status = 'failed' AND upload_attempts < 3)
+            ORDER BY episode_number
+            LIMIT ?
+        ''', (limit,))
+        return self.cursor.fetchall()
+    
+    def update_upload_status(self, queue_id, status, attempts=None):
+        if attempts is not None:
+            self.cursor.execute('''
+                UPDATE upload_queue 
+                SET status = ?, upload_attempts = ?, last_attempt = ?
+                WHERE id = ?
+            ''', (status, attempts, datetime.now(), queue_id))
+        else:
+            self.cursor.execute('''
+                UPDATE upload_queue 
+                SET status = ?, last_attempt = ?
+                WHERE id = ?
+            ''', (status, datetime.now(), queue_id))
+        self.conn.commit()
 
 # Initialize database
 db = MediaDatabase()
 
 # Bot configuration
 BOT_TOKEN = '8074691861:AAFti_NIEmQj3HRwgT8UHSBio4_9qwkDFac'  # Replace with your bot token
+STORAGE_CHANNEL_ID = '@your_storage_channel'  # Replace with your channel username or ID
 
-# Known Telegram channels for One Piece (from search results)
-ONE_PIECE_CHANNELS = [
-    {
-        'username': '@onepiecedeluxe',
-        'title': 'One Piece Deluxe',
-        'description': 'HD episodes with multiple qualities',
-        'ep_start': 1,
-        'ep_end': 1070
-    },
-    {
-        'username': '@mugiwaraitalia',
-        'title': 'Mugiwara Italia',
-        'description': 'All episodes, movies, and specials in Italian',
-        'ep_start': 1,
-        'ep_end': 1070
-    },
-    {
-        'username': '@Onepiece_canal',
-        'title': 'One piece Canal™',
-        'description': '96.9K subscribers with 782 videos',
-        'ep_start': 1,
-        'ep_end': 782
-    },
-    {
-        'username': '@onepiece_latino_oficial',
-        'title': 'One Piece Latino',
-        'description': 'Spanish dubbed episodes',
-        'ep_start': 1,
-        'ep_end': 950
-    },
-    {
-        'username': '@onepiece_sub_espanol',
-        'title': 'One Piece Sub Español',
-        'description': 'Spanish subtitled episodes',
-        'ep_start': 1,
-        'ep_end': 1070
-    },
-    {
-        'username': '@Remux_2160P',
-        'title': 'Remux 2160P',
-        'description': '4K One Piece content',
-        'ep_start': 900,
-        'ep_end': 1070
-    }
-]
-
-def setup_telegram_channels():
-    """Add known Telegram channels to database"""
-    for channel in ONE_PIECE_CHANNELS:
-        db.add_telegram_channel(
-            channel['username'],
-            channel['title'],
-            channel['description'],
-            channel['ep_start'],
-            channel['ep_end']
-        )
-    print(f"Added {len(ONE_PIECE_CHANNELS)} Telegram channels")
-
-def generate_one_piece_episodes_with_videos():
-    """Generate One Piece episodes with multiple video sources"""
+# Function to generate One Piece episodes
+def generate_one_piece_episodes():
+    """Generate One Piece episodes in database"""
     # First, add One Piece to anime table if not exists
     db.cursor.execute('''
         INSERT OR IGNORE INTO anime (title, type, description, rating, total_episodes, status)
@@ -382,15 +241,13 @@ def generate_one_piece_episodes_with_videos():
                     # Generate episode title and description
                     if ep_num == 1:
                         title = "I'm Luffy! The Man Who Will Become the Pirate King!"
-                        desc = "Luffy begins his journey by saving Coby and meets Roronoa Zoro. The East Blue saga begins!"
+                        desc = "Luffy begins his journey by saving Coby and meets Roronoa Zoro."
                     elif ep_num == 1155:
                         title = "The Beginning of the New Era! Luffy's Final Battle!"
                         desc = "The epic conclusion of the Egghead arc begins as Luffy faces the Elders."
                     else:
-                        # Generate dynamic titles based on arcs
-                        filler_text = " (Filler)" if ep_num % 10 == 0 else ""
-                        title = f"Episode {ep_num}: {arc_name}{filler_text}"
-                        desc = f"{arc_desc} - Part {((ep_num - arc_start) // 5) + 1} of the {arc_name}."
+                        title = f"Episode {ep_num}: {arc_name}"
+                        desc = f"{arc_desc} - Part {((ep_num - arc_start) // 5) + 1}."
                     
                     # Insert episode
                     db.cursor.execute('''
@@ -405,79 +262,12 @@ def generate_one_piece_episodes_with_videos():
                         f"20{(ep_num//100)+19}-{(ep_num%12)+1:02d}-01",
                         1 if ep_num % 10 == 0 else 0
                     ))
-                    
-                    episode_id = db.cursor.lastrowid
-                    
-                    # Add video sources for this episode
-                    add_video_sources_for_episode(episode_id, ep_num)
         
         db.conn.commit()
-        print(f"Generated {1155} One Piece episodes with video sources!")
-
-def add_video_sources_for_episode(episode_id, episode_number):
-    """Add multiple video sources for an episode"""
-    
-    # 1. Direct download links (example - replace with actual links)
-    # You would need to host these files or find reliable sources
-    direct_urls = [
-        {
-            'url': f"https://example.com/one-piece/episode-{episode_number:04d}.mp4",
-            'quality': '1080p',
-            'language': 'sub'
-        },
-        {
-            'url': f"https://example.com/one-piece/episode-{episode_number:04d}-720p.mp4",
-            'quality': '720p',
-            'language': 'sub'
-        }
-    ]
-    
-    # 2. Streaming service links
-    streaming_urls = [
-        {
-            'url': f"https://www.crunchyroll.com/watch/one-piece-episode-{episode_number}",
-            'quality': 'variable',
-            'language': 'sub'
-        },
-        {
-            'url': f"https://www.funimation.com/shows/one-piece/episode-{episode_number}",
-            'quality': 'variable',
-            'language': 'dub'
-        },
-        {
-            'url': f"https://9anime.to/watch/one-piece.{episode_number}",
-            'quality': 'variable',
-            'language': 'sub'
-        }
-    ]
-    
-    # 3. Add direct sources
-    for source in direct_urls:
-        try:
-            db.add_video_source(episode_id, 'direct', source['url'], 
-                              source['quality'], source['language'])
-        except:
-            pass
-    
-    # 4. Add streaming sources
-    for source in streaming_urls:
-        try:
-            db.add_video_source(episode_id, 'streaming', source['url'],
-                              source['quality'], source['language'])
-        except:
-            pass
-    
-    # 5. Add Telegram channel info (will be used to generate channel links)
-    channels = db.get_channels_for_episode(episode_number)
-    for channel in channels:
-        channel_url = f"https://t.me/{channel[1].replace('@', '')}"
-        try:
-            db.add_video_source(episode_id, 'telegram', channel_url,
-                              'variable', 'multiple')
-        except:
-            pass
+        print(f"✅ Generated {1155} One Piece episodes in database!")
 
 def add_sample_data():
+    """Add other anime, movies, and TV shows"""
     # Add other anime
     other_anime = [
         ('Naruto', 'EP', 'The story of Naruto Uzumaki, a ninja with dreams of becoming Hokage', 9.5, 720, 'Completed'),
@@ -509,69 +299,196 @@ def add_sample_data():
         except:
             pass
     
-    # Add sample movies
-    movies = [
-        ('Inception', 'A thief who steals corporate secrets through dream-sharing technology', 9.0, 148, 'Sci-Fi', 2010),
-        ('The Dark Knight', 'Batman fights against the Joker in Gotham City', 9.3, 152, 'Action', 2008),
-        ('Spirited Away', 'A young girl enters a mysterious world of spirits', 9.5, 125, 'Animation', 2001),
-        ('Your Name', 'Two teenagers discover a mysterious connection', 9.4, 106, 'Animation', 2016),
-        ('Interstellar', 'A team of explorers travel through a wormhole in space', 9.4, 169, 'Sci-Fi', 2014)
-    ]
-    
-    for movie in movies:
-        try:
-            db.cursor.execute('''
-                INSERT OR IGNORE INTO movies (title, description, rating, duration, genre, release_year)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', movie)
-        except:
-            pass
-    
-    # Add sample TV shows
-    tv_shows = [
-        ('Breaking Bad', 'A chemistry teacher turns to cooking meth', 9.8, 5, 13, 'Completed'),
-        ('Game of Thrones', 'Noble families fight for control of the Iron Throne', 9.5, 8, 10, 'Completed'),
-        ('Stranger Things', 'Kids encounter supernatural forces in 1980s Indiana', 9.2, 4, 9, 'Ongoing'),
-        ('The Witcher', 'A monster hunter navigates a chaotic world', 8.9, 3, 8, 'Ongoing'),
-        ('The Mandalorian', 'A lone bounty hunter in the Star Wars universe', 9.4, 3, 8, 'Ongoing')
-    ]
-    
-    for tv in tv_shows:
-        try:
-            db.cursor.execute('''
-                INSERT OR IGNORE INTO tv_shows (title, description, rating, seasons, episodes_per_season, status)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', tv)
-        except:
-            pass
-    
     db.conn.commit()
-    print("Sample data added!")
+    print("✅ Sample anime data added!")
 
+# Function to add episodes to upload queue (run this when you have video files)
+def add_videos_to_upload_queue(video_folder):
+    """Add all video files from a folder to upload queue"""
+    import os
+    
+    # Get One Piece ID
+    db.cursor.execute('SELECT id FROM anime WHERE title = "One Piece"')
+    one_piece_id = db.cursor.fetchone()[0]
+    
+    video_extensions = ('.mp4', '.mkv', '.avi', '.mov')
+    files_added = 0
+    
+    for filename in sorted(os.listdir(video_folder)):
+        if filename.lower().endswith(video_extensions):
+            # Try to extract episode number from filename
+            import re
+            match = re.search(r'ep[_. ]?(\d+)', filename, re.I)
+            
+            if match:
+                episode_num = int(match.group(1))
+                if 1 <= episode_num <= 1155:
+                    file_path = os.path.join(video_folder, filename)
+                    db.add_to_upload_queue(one_piece_id, episode_num, file_path)
+                    files_added += 1
+                    print(f"  Added to queue: Episode {episode_num} - {filename}")
+    
+    print(f"✅ Added {files_added} episodes to upload queue!")
+
+# Upload videos to Telegram and get file_ids
+async def process_upload_queue(context: ContextTypes.DEFAULT_TYPE):
+    """Process pending uploads from queue"""
+    pending = db.get_pending_uploads(5)  # Process 5 at a time
+    
+    if not pending:
+        return
+    
+    for upload in pending:
+        queue_id, anime_id, episode_num, file_path, status, attempts, last_attempt = upload
+        
+        print(f"📤 Uploading Episode {episode_num}...")
+        
+        try:
+            # Check if file exists
+            if not os.path.exists(file_path):
+                db.update_upload_status(queue_id, 'failed', attempts + 1)
+                print(f"  ❌ File not found: {file_path}")
+                continue
+            
+            # Upload to Telegram storage channel
+            with open(file_path, 'rb') as video_file:
+                message = await context.bot.send_video(
+                    chat_id=STORAGE_CHANNEL_ID,
+                    video=video_file,
+                    caption=f"One Piece Episode {episode_num}",
+                    supports_streaming=True,
+                    filename=f"One_Piece_Episode_{episode_num}.mp4"
+                )
+            
+            # Get file_id from the sent message
+            file_id = message.video.file_id
+            thumbnail_id = message.video.thumbnail.file_id if message.video.thumbnail else None
+            duration = message.video.duration
+            file_size = message.video.file_size
+            
+            # Update episode with file_id
+            episode_record = db.cursor.execute('''
+                SELECT id FROM anime_episodes 
+                WHERE anime_id = ? AND episode_number = ?
+            ''', (anime_id, episode_num)).fetchone()
+            
+            if episode_record:
+                episode_id = episode_record[0]
+                db.update_episode_telegram_file_id(
+                    episode_id, file_id, thumbnail_id, duration, file_size
+                )
+            
+            # Update queue status
+            db.update_upload_status(queue_id, 'completed', attempts + 1)
+            print(f"  ✅ Episode {episode_num} uploaded! File ID: {file_id[:20]}...")
+            
+            # Small delay to avoid flooding
+            await asyncio.sleep(2)
+            
+        except Exception as e:
+            print(f"  ❌ Error uploading Episode {episode_num}: {e}")
+            db.update_upload_status(queue_id, 'failed', attempts + 1)
+
+# Command to manually upload a specific episode
+async def upload_episode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command to upload a specific episode - /upload 123"""
+    try:
+        episode_num = int(context.args[0])
+        
+        # Get One Piece ID
+        db.cursor.execute('SELECT id FROM anime WHERE title = "One Piece"')
+        one_piece_id = db.cursor.fetchone()[0]
+        
+        # Get episode details
+        db.cursor.execute('''
+            SELECT id FROM anime_episodes 
+            WHERE anime_id = ? AND episode_number = ?
+        ''', (one_piece_id, episode_num))
+        result = db.cursor.fetchone()
+        
+        if not result:
+            await update.message.reply_text(f"❌ Episode {episode_num} not found in database!")
+            return
+        
+        episode_id = result[0]
+        
+        # Ask user to send the video
+        await update.message.reply_text(
+            f"📤 Please send the video file for One Piece Episode {episode_num}\n"
+            f"(MP4 format recommended for better streaming)"
+        )
+        
+        # Store episode_id in context for next message
+        context.user_data['waiting_for_video'] = episode_id
+        context.user_data['episode_num'] = episode_num
+        
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /upload [episode_number]")
+
+# Handle video messages from users
+async def handle_video_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle video files sent by users"""
+    if 'waiting_for_video' not in context.user_data:
+        return
+    
+    episode_id = context.user_data['waiting_for_video']
+    episode_num = context.user_data.get('episode_num', 'unknown')
+    
+    if update.message.video:
+        video = update.message.video
+        
+        # Get file_id
+        file_id = video.file_id
+        thumbnail_id = video.thumbnail.file_id if video.thumbnail else None
+        duration = video.duration
+        file_size = video.file_size
+        
+        # Update database
+        db.update_episode_telegram_file_id(episode_id, file_id, thumbnail_id, duration, file_size)
+        
+        await update.message.reply_text(
+            f"✅ Episode {episode_num} uploaded successfully!\n"
+            f"File ID: `{file_id}`",
+            parse_mode='Markdown'
+        )
+        
+        # Clear user data
+        del context.user_data['waiting_for_video']
+        del context.user_data['episode_num']
+    
+    elif update.message.document:
+        # Handle document (might be video file)
+        await update.message.reply_text(
+            "Please send as video (not document) for better streaming.\n"
+            "Use /upload again and send as video."
+        )
+
+# Bot command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     # Add user to database
     db.add_user(user.id, user.username, user.first_name)
     
-    # Create main menu with 3 buttons
+    # Create main menu
     keyboard = [
         [InlineKeyboardButton("📺 ANIME", callback_data='main_anime')],
         [InlineKeyboardButton("🎬 MOVIE", callback_data='main_movie')],
         [InlineKeyboardButton("📱 TV", callback_data='main_tv')]
     ]
     
+    # Add admin button for upload (only for specific users)
+    if user.id in [123456789]:  # Replace with your Telegram user ID
+        keyboard.append([InlineKeyboardButton("📤 Admin Upload", callback_data='admin_upload')])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     welcome_text = (
         f"Welcome {user.first_name}! 🎉\n\n"
-        "Choose a category to explore:\n\n"
-        "📺 *Anime* - Watch episodes with video playback\n"
-        "🎬 *Movies* - Full-length feature films\n"
-        "📱 *TV Shows* - Series and seasons"
+        "Choose a category to explore:"
     )
     
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -589,6 +506,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'main_tv':
         await show_tv_shows(query)
+    
+    elif query.data == 'admin_upload':
+        await show_admin_menu(query)
     
     # Anime submenu options
     elif query.data == 'anime_manga':
@@ -620,28 +540,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         episode_id = int(query.data.split('_')[1])
         await show_episode_details(query, episode_id, context)
     
-    elif query.data.startswith('play_video_'):
-        await play_video(update, context)
-    
-    elif query.data.startswith('play_source_'):
-        await play_from_source(update, context)
+    elif query.data.startswith('play_episode_'):
+        episode_id = int(query.data.split('_')[2])
+        await play_episode(update, context, episode_id)
     
     elif query.data.startswith('mark_watched_'):
         parts = query.data.split('_')
         episode_id = int(parts[2])
         await mark_episode_watched(query, episode_id, user_id)
     
-    # Movie and TV show details
-    elif query.data.startswith('movie_detail_'):
-        movie_id = int(query.data.split('_')[2])
-        await show_movie_details(query, movie_id)
+    # Admin functions
+    elif query.data == 'upload_queue':
+        await show_upload_queue(query)
     
-    elif query.data.startswith('play_movie_'):
-        await play_movie(update, context)
+    elif query.data.startswith('process_queue'):
+        await process_upload_queue(context)
+        await query.edit_message_text("✅ Processing upload queue... Check console for progress.")
     
-    elif query.data.startswith('tv_detail_'):
-        show_id = int(query.data.split('_')[2])
-        await show_tv_details(query, show_id)
+    elif query.data == 'back_to_admin':
+        await show_admin_menu(query)
     
     # Back navigation
     elif query.data == 'back_to_anime_menu':
@@ -653,87 +570,96 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'back_to_main':
         await show_main_menu(query)
-    
-    # Preferences
-    elif query.data == 'preferences':
-        await show_preferences(query, user_id)
-    
-    elif query.data.startswith('set_quality_'):
-        quality = query.data.split('_')[2]
-        await set_preference(query, user_id, 'quality', quality)
-    
-    elif query.data.startswith('set_lang_'):
-        lang = query.data.split('_')[2]
-        await set_preference(query, user_id, 'language', lang)
 
 async def show_main_menu(query):
     keyboard = [
         [InlineKeyboardButton("📺 ANIME", callback_data='main_anime')],
         [InlineKeyboardButton("🎬 MOVIE", callback_data='main_movie')],
-        [InlineKeyboardButton("📱 TV", callback_data='main_tv')],
-        [InlineKeyboardButton("⚙️ Preferences", callback_data='preferences')]
+        [InlineKeyboardButton("📱 TV", callback_data='main_tv')]
     ]
+    
+    # Check if admin
+    if query.from_user.id in [123456789]:  # Replace with your ID
+        keyboard.append([InlineKeyboardButton("📤 Admin Panel", callback_data='admin_upload')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("Main Menu - Choose a category:", reply_markup=reply_markup)
 
-async def show_preferences(query, user_id):
-    """Show user preferences menu"""
-    prefs = db.get_user_preferences(user_id)
+async def show_admin_menu(query):
+    """Show admin menu for uploads"""
+    # Get queue stats
+    db.cursor.execute("SELECT COUNT(*) FROM upload_queue WHERE status = 'pending'")
+    pending = db.cursor.fetchone()[0]
     
-    if prefs:
-        quality, language, auto_play = prefs
-    else:
-        quality, language, auto_play = "720p", "sub", 0
+    db.cursor.execute("SELECT COUNT(*) FROM upload_queue WHERE status = 'completed'")
+    completed = db.cursor.fetchone()[0]
+    
+    db.cursor.execute("SELECT COUNT(*) FROM upload_queue WHERE status = 'failed'")
+    failed = db.cursor.fetchone()[0]
+    
+    db.cursor.execute("SELECT COUNT(*) FROM anime_episodes WHERE telegram_file_id IS NOT NULL")
+    uploaded_eps = db.cursor.fetchone()[0]
     
     text = (
-        "⚙️ *Your Preferences*\n\n"
-        f"🎬 Preferred Quality: {quality}\n"
-        f"🌐 Preferred Language: {'Subtitled' if language == 'sub' else 'Dubbed'}\n"
-        f"▶️ Auto Play: {'On' if auto_play else 'Off'}\n\n"
-        "Select quality:"
+        "📤 *Admin Upload Panel*\n\n"
+        f"📊 *Upload Statistics:*\n"
+        f"✅ Uploaded Episodes: {uploaded_eps}/1155\n"
+        f"⏳ Pending in Queue: {pending}\n"
+        f"✅ Completed Uploads: {completed}\n"
+        f"❌ Failed Uploads: {failed}\n\n"
+        "Options:"
     )
     
     keyboard = [
-        [
-            InlineKeyboardButton("480p", callback_data='set_quality_480p'),
-            InlineKeyboardButton("720p", callback_data='set_quality_720p'),
-            InlineKeyboardButton("1080p", callback_data='set_quality_1080p')
-        ],
-        [
-            InlineKeyboardButton("4K", callback_data='set_quality_4K')
-        ],
-        [
-            InlineKeyboardButton("Subtitled", callback_data='set_lang_sub'),
-            InlineKeyboardButton("Dubbed", callback_data='set_lang_dub')
-        ],
+        [InlineKeyboardButton("📋 Show Upload Queue", callback_data='upload_queue')],
+        [InlineKeyboardButton("▶️ Process Queue", callback_data='process_queue')],
+        [InlineKeyboardButton("📤 Manual Upload", callback_data='manual_upload')],
         [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def set_preference(query, user_id, pref_type, value):
-    """Set user preference"""
-    if pref_type == 'quality':
-        db.cursor.execute('''
-            UPDATE user_preferences SET preferred_quality = ? WHERE user_id = ?
-        ''', (value, user_id))
-    elif pref_type == 'language':
-        db.cursor.execute('''
-            UPDATE user_preferences SET preferred_language = ? WHERE user_id = ?
-        ''', (value, user_id))
+async def show_upload_queue(query):
+    """Show current upload queue"""
+    db.cursor.execute('''
+        SELECT * FROM upload_queue 
+        WHERE status IN ('pending', 'failed')
+        ORDER BY episode_number
+        LIMIT 20
+    ''')
+    queue = db.cursor.fetchall()
     
-    db.conn.commit()
-    await query.answer(f"✅ {pref_type.capitalize()} set to {value}")
-    await show_preferences(query, user_id)
+    if not queue:
+        await query.edit_message_text(
+            "📋 Upload queue is empty!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back to Admin", callback_data='back_to_admin')
+            ]])
+        )
+        return
+    
+    text = "📋 *Upload Queue (First 20):*\n\n"
+    
+    for item in queue:
+        queue_id, anime_id, ep_num, file_path, status, attempts, last_attempt = item
+        status_emoji = "⏳" if status == 'pending' else "❌"
+        text += f"{status_emoji} Episode {ep_num}: {status} (attempts: {attempts})\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("▶️ Process Now", callback_data='process_queue')],
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data='back_to_admin')]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def show_anime_menu(query):
-    """Show anime submenu with Manga, EP, OVA options"""
+    """Show anime submenu"""
     keyboard = [
         [InlineKeyboardButton("📚 MANGA", callback_data='anime_manga')],
         [InlineKeyboardButton("📺 EP (Episodes)", callback_data='anime_ep')],
-        [InlineKeyboardButton("💿 OVA (Original Video Animation)", callback_data='anime_ova')],
+        [InlineKeyboardButton("💿 OVA", callback_data='anime_ova')],
         [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
     ]
     
@@ -741,10 +667,7 @@ async def show_anime_menu(query):
     
     text = (
         "📺 *ANIME MENU*\n\n"
-        "Choose what type of anime you're interested in:\n\n"
-        "📚 *Manga* - Comic books/graphic novels\n"
-        "📺 *EP* - TV series episodes (with video!)\n"
-        "💿 *OVA* - Original Video Animation (specials/movies)"
+        "Choose what type of anime you're interested in:"
     )
     
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -757,20 +680,18 @@ async def show_anime_by_type(query, anime_type):
         await query.edit_message_text(
             f"No {anime_type} found! 😢",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Back to Anime Menu", callback_data='back_to_anime_menu')
+                InlineKeyboardButton("🔙 Back", callback_data='back_to_anime_menu')
             ]])
         )
         return
     
     keyboard = []
     for anime in anime_list:
-        # anime: (id, title, type, description, rating, total_episodes, image_url, status)
         episodes_text = f" - {anime[5]} eps" if anime[5] else ""
-        video_icon = "🎬 " if anime[2] == 'EP' else ""
-        button_text = f"{video_icon}{anime[1]} ⭐{anime[4]}{episodes_text}"
+        button_text = f"{anime[1]} ⭐{anime[4]}{episodes_text}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f'anime_detail_{anime[0]}')])
     
-    keyboard.append([InlineKeyboardButton("🔙 Back to Anime Menu", callback_data='back_to_anime_menu')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='back_to_anime_menu')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(f"📋 {anime_type} List:", reply_markup=reply_markup)
@@ -783,25 +704,21 @@ async def show_anime_details(query, anime_id):
         await query.edit_message_text("Anime not found!")
         return
     
-    # anime: (id, title, type, description, rating, total_episodes, image_url, status)
     emoji_map = {'Manga': '📚', 'EP': '📺', 'OVA': '💿'}
-    video_available = "🎬 Video Available!" if anime[2] == 'EP' and anime[5] else ""
     
     text = (
         f"{emoji_map.get(anime[2], '📺')} *{anime[1]}*\n\n"
-        f"{video_available}\n"
         f"📌 *Type:* {anime[2]}\n"
         f"⭐ *Rating:* {anime[4]}/10\n"
-        f"📊 *Total Episodes/Chapters:* {anime[5] if anime[5] else 'N/A'}\n"
+        f"📊 *Total Episodes:* {anime[5] if anime[5] else 'N/A'}\n"
         f"📈 *Status:* {anime[7]}\n\n"
         f"📝 *Description:*\n{anime[3]}"
     )
     
     keyboard = []
     
-    # Add "Watch Episodes" button only for EP type
     if anime[2] == 'EP' and anime[5] and anime[5] > 0:
-        keyboard.append([InlineKeyboardButton("🎬 WATCH EPISODES", callback_data=f'show_episodes_{anime_id}')])
+        keyboard.append([InlineKeyboardButton("📺 View Episodes", callback_data=f'show_episodes_{anime_id}')])
     
     keyboard.append([
         InlineKeyboardButton("🔙 Back", callback_data=f'anime_{anime[2].lower()}'),
@@ -813,7 +730,7 @@ async def show_anime_details(query, anime_id):
 
 async def show_episode_list(query, anime_id, page=1):
     """Show paginated list of episodes"""
-    episodes_per_page = 15  # Slightly smaller for better mobile viewing
+    episodes_per_page = 15
     episodes = db.get_anime_episodes(anime_id, page, episodes_per_page)
     total_episodes = db.get_total_episodes_count(anime_id)
     total_pages = math.ceil(total_episodes / episodes_per_page)
@@ -826,497 +743,222 @@ async def show_episode_list(query, anime_id, page=1):
         await query.edit_message_text(
             "No episodes found!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Back to Anime", callback_data=f'anime_detail_{anime_id}')
+                InlineKeyboardButton("🔙 Back", callback_data=f'anime_detail_{anime_id}')
             ]])
         )
         return
     
-    # Create episode buttons
     keyboard = []
     for episode in episodes:
-        # episode: (id, anime_id, episode_number, title, description, air_date, filler)
         ep_num = episode[2]
-        filler_icon = "⚠️ " if episode[6] else ""
-        watched_icon = "✅ " if ep_num <= last_watched else ""
-        play_icon = "🎬 "
+        has_video = "🎬" if episode[7] else "❌"  # Check if has telegram_file_id
+        filler_icon = "⚠️" if episode[6] else ""
+        watched_icon = "✅" if ep_num <= last_watched else "⭕"
         
-        # Check if episode has video sources
-        video_sources = db.get_episode_video_sources(episode[0])
-        video_indicator = "📺 " if video_sources else "❌ "
-        
-        button_text = f"{watched_icon}{play_icon}{video_indicator}Ep {ep_num}: {episode[3][:25]}..."
+        button_text = f"{watched_icon}{has_video}{filler_icon} Ep {ep_num}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f'episode_{episode[0]}')])
     
-    # Add pagination buttons
+    # Pagination
     nav_buttons = []
     if page > 1:
-        nav_buttons.append(InlineKeyboardButton("◀️ Prev", callback_data=f'ep_page_{anime_id}_{page-1}'))
+        nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f'ep_page_{anime_id}_{page-1}'))
     
-    nav_buttons.append(InlineKeyboardButton(f"📄 {page}/{total_pages}", callback_data="noop"))
+    nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
     
     if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f'ep_page_{anime_id}_{page+1}'))
+        nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f'ep_page_{anime_id}_{page+1}'))
     
     keyboard.append(nav_buttons)
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f'anime_detail_{anime_id}')])
     
-    # Add back button
-    keyboard.append([InlineKeyboardButton("🔙 Back to Anime", callback_data=f'anime_detail_{anime_id}')])
-    
-    progress_text = f"📺 *{anime[1]} Episodes*\n"
-    progress_text += f"📊 Progress: Episode {last_watched}/{total_episodes}\n"
-    progress_text += f"📌 Page {page}/{total_pages}\n\n"
-    progress_text += "✅ = Watched | ⚠️ = Filler | 🎬 = Play | 📺 = Video Available | ❌ = No Video"
+    progress_text = f"📺 *{anime[1]}*\n"
+    progress_text += f"📊 Progress: {last_watched}/{total_episodes}\n\n"
+    progress_text += "✅=Watched ⭕=Unwatched 🎬=Video ❌=NoVideo ⚠️=Filler"
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(progress_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def show_episode_details(query, episode_id, context):
-    """Show detailed information about an episode with play options"""
+    """Show episode details"""
     episode = db.get_episode_details(episode_id)
     
     if not episode:
         await query.edit_message_text("Episode not found!")
         return
     
-    # Get video sources
-    video_sources = db.get_episode_video_sources(episode_id)
-    user_prefs = db.get_user_preferences(query.from_user.id)
-    
-    # episode: (id, anime_id, episode_number, title, description, air_date, filler)
-    filler_text = "⚠️ FILLER EPISODE" if episode[6] else "📺 Canon Episode"
-    video_count = len(video_sources)
-    
-    # Get user preferences
-    pref_quality, pref_lang, auto_play = user_prefs if user_prefs else ("720p", "sub", 0)
+    has_video = "✅ Available" if episode[7] else "❌ Not Available"
+    filler_text = "⚠️ Filler Episode" if episode[6] else "📺 Canon Episode"
     
     text = (
         f"📺 *Episode {episode[2]}: {episode[3]}*\n\n"
         f"📌 {filler_text}\n"
-        f"📅 *Air Date:* {episode[5]}\n"
-        f"🎬 *Video Sources:* {video_count} available\n\n"
+        f"🎬 Video: {has_video}\n"
+        f"📅 Air Date: {episode[5]}\n\n"
         f"📝 *Description:*\n{episode[4]}"
     )
     
-    # Create keyboard with play options
     keyboard = []
     
-    # Add Play button
-    if video_sources > 0:
-        # Filter sources based on preferences
-        preferred_sources = [s for s in video_sources if s[4] == pref_quality and s[5] == pref_lang]
-        
-        if preferred_sources:
-            # Has preferred quality/language
-            keyboard.append([InlineKeyboardButton(
-                f"▶️ PLAY (with your preferences)", 
-                callback_data=f'play_video_{episode_id}'
-            )])
-        
-        # Add "More Sources" button if multiple sources
-        if len(video_sources) > 1:
-            keyboard.append([InlineKeyboardButton(
-                "📋 Select Video Source", 
-                callback_data=f'show_sources_{episode_id}'
-            )])
-        else:
-            # Single source play button
-            keyboard.append([InlineKeyboardButton(
-                "▶️ PLAY EPISODE", 
-                callback_data=f'play_video_{episode_id}'
-            )])
+    if episode[7]:  # Has video
+        keyboard.append([InlineKeyboardButton("▶️ PLAY EPISODE", callback_data=f'play_episode_{episode_id}')])
     
-    # Add source buttons
     keyboard.extend([
-        [InlineKeyboardButton("✅ Mark as Watched", callback_data=f'mark_watched_ep_{episode_id}')],
-        [
-            InlineKeyboardButton("⬅️ Prev", callback_data=f'episode_prev_{episode_id}'),
-            InlineKeyboardButton("Next ➡️", callback_data=f'episode_next_{episode_id}')
-        ],
+        [InlineKeyboardButton("✅ Mark Watched", callback_data=f'mark_watched_{episode_id}')],
         [InlineKeyboardButton("🔙 Back to Episodes", callback_data='back_to_episodes')],
         [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
     ])
     
-    # Store current episode in context for prev/next navigation
     context.user_data['current_episode'] = episode_id
-    context.user_data['current_anime'] = episode[1]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Play video for selected episode"""
+async def play_episode(update: Update, context: ContextTypes.DEFAULT_TYPE, episode_id):
+    """Play episode using Telegram file_id"""
     query = update.callback_query
     await query.answer()
     
-    episode_id = int(query.data.split('_')[2])
-    episode = db.get_episode_details(episode_id)
-    user_prefs = db.get_user_preferences(query.from_user.id)
-    
-    if not episode:
-        await query.message.reply_text("Episode not found!")
-        return
-    
-    # Get video sources
-    video_sources = db.get_episode_video_sources(episode_id)
-    
-    if not video_sources:
-        await query.message.reply_text(
-            "❌ No video sources available for this episode.\n\n"
-            "Try checking these Telegram channels:\n"
-            "• @onepiecedeluxe\n"
-            "• @mugiwaraitalia\n"
-            "• @Onepiece_canal"
-        )
-        return
-    
-    # Find best source based on user preferences
-    pref_quality, pref_lang, auto_play = user_prefs if user_prefs else ("720p", "sub", 0)
-    
-    # Try to find preferred source
-    preferred_source = None
-    for source in video_sources:
-        if source[4] == pref_quality and source[5] == pref_lang:
-            preferred_source = source
-            break
-    
-    # If no preferred source, use first available
-    if not preferred_source and video_sources:
-        preferred_source = video_sources[0]
-    
-    if not preferred_source:
-        await query.message.reply_text("No suitable video source found!")
-        return
-    
-    source_id, episode_id, source_type, source_url, quality, language = preferred_source
-    
-    # Create caption
-    caption = (
-        f"📺 *Episode {episode[2]}: {episode[3]}*\n"
-        f"🎬 Quality: {quality} | 🌐 {language}\n"
-        f"📌 Source: {source_type}"
-    )
-    
-    # Send video based on source type
-    try:
-        if source_type == 'direct' and source_url.endswith(('.mp4', '.mkv', '.avi')):
-            # Send direct video file
-            await context.bot.send_video(
-                chat_id=query.message.chat_id,
-                video=source_url,
-                caption=caption,
-                parse_mode='Markdown',
-                supports_streaming=True
-            )
-            
-        elif source_type == 'streaming':
-            # Send streaming link
-            await query.message.reply_text(
-                f"🎬 *Watch Episode {episode[2]}*\n\n"
-                f"Click the link below to watch:\n{source_url}\n\n"
-                f"Quality: {quality} | Language: {language}",
-                parse_mode='Markdown',
-                disable_web_page_preview=True
-            )
-            
-        elif source_type == 'telegram':
-            # Send Telegram channel link
-            channel_info = f"Join this Telegram channel to watch:\n{source_url}"
-            
-            # Also try to find if the channel has the video
-            await query.message.reply_text(
-                f"📺 *Telegram Source*\n\n"
-                f"{channel_info}\n\n"
-                f"Look for Episode {episode[2]} in the channel.",
-                parse_mode='Markdown'
-            )
-            
-            # Option: forward from channel if you have message ID
-            # This would require mapping episode numbers to message IDs
-        
-        # Mark as watched if auto-play is on
-        if auto_play:
-            db.update_user_progress(query.from_user.id, episode[1], episode[2])
-            await query.message.reply_text(f"✅ Auto-marked Episode {episode[2]} as watched!")
-            
-    except Exception as e:
-        await query.message.reply_text(f"Error playing video: {str(e)}\n\nTry another source.")
-        
-        # Show other sources
-        await show_video_sources(query, episode_id, context)
-
-async def play_from_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Play video from a specific source"""
-    query = update.callback_query
-    await query.answer()
-    
-    source_id = int(query.data.split('_')[2])
-    
-    # Get source details from database
-    db.cursor.execute('''
-        SELECT * FROM video_sources WHERE id = ?
-    ''', (source_id,))
-    source = db.cursor.fetchone()
-    
-    if not source:
-        await query.message.reply_text("Source not found!")
-        return
-    
-    source_id, episode_id, source_type, source_url, quality, language = source
     episode = db.get_episode_details(episode_id)
     
-    caption = (
-        f"📺 *Episode {episode[2]}: {episode[3]}*\n"
-        f"🎬 Quality: {quality} | 🌐 {language}"
-    )
+    if not episode or not episode[7]:  # Check if has file_id
+        await query.message.reply_text("❌ Video not available for this episode!")
+        return
+    
+    file_id = episode[7]
+    title = episode[3]
+    ep_num = episode[2]
+    
+    caption = f"📺 *One Piece Episode {ep_num}*\n{title}"
     
     try:
-        if source_type == 'direct':
-            await context.bot.send_video(
-                chat_id=query.message.chat_id,
-                video=source_url,
-                caption=caption,
-                parse_mode='Markdown',
-                supports_streaming=True
-            )
-        else:
-            await query.message.reply_text(
-                f"📺 *Watch Here*\n\n{source_url}",
-                parse_mode='Markdown'
-            )
-    except Exception as e:
-        await query.message.reply_text(f"Error: {str(e)}")
-
-async def show_video_sources(query, episode_id, context):
-    """Show all available video sources for an episode"""
-    sources = db.get_episode_video_sources(episode_id)
-    episode = db.get_episode_details(episode_id)
-    
-    if not sources:
-        await query.edit_message_text(
-            f"No video sources found for Episode {episode[2]}!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Back", callback_data=f'episode_{episode_id}')
-            ]])
+        # Send video using file_id (instant playback, no upload needed)
+        await context.bot.send_video(
+            chat_id=query.message.chat_id,
+            video=file_id,
+            caption=caption,
+            parse_mode='Markdown',
+            supports_streaming=True
         )
-        return
-    
-    text = f"📺 *Episode {episode[2]} - Video Sources*\n\n"
-    
-    keyboard = []
-    for source in sources:
-        source_id, _, source_type, _, quality, language = source
-        source_emoji = {
-            'direct': '📁',
-            'streaming': '🌐',
-            'telegram': '📱',
-            'torrent': '🧲'
-        }.get(source_type, '📺')
         
-        text += f"{source_emoji} {source_type.upper()} - {quality} - {language}\n"
+        # Auto-mark as watched (optional)
+        user_id = query.from_user.id
+        db.update_user_progress(user_id, episode[1], ep_num)
         
-        button_text = f"{source_emoji} {quality} - {language}"
-        keyboard.append([InlineKeyboardButton(
-            button_text, 
-            callback_data=f'play_source_{source_id}'
-        )])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=f'episode_{episode_id}')])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        await query.message.reply_text(f"❌ Error playing video: {str(e)}")
 
 async def mark_episode_watched(query, episode_id, user_id):
-    """Mark an episode as watched and update progress"""
+    """Mark episode as watched"""
     episode = db.get_episode_details(episode_id)
     
     if episode:
-        anime_id = episode[1]
-        episode_num = episode[2]
-        
-        # Update user progress
-        db.update_user_progress(user_id, anime_id, episode_num)
-        
-        await query.answer(f"✅ Marked Episode {episode_num} as watched!")
-        
-        # Show updated episode list
-        await show_episode_list(query, anime_id, 1)
+        db.update_user_progress(user_id, episode[1], episode[2])
+        await query.answer(f"✅ Marked Episode {episode[2]} as watched!")
+        await show_episode_list(query, episode[1], 1)
 
 async def show_movies(query):
-    """Show all movies"""
+    """Show movies list"""
     db.cursor.execute('SELECT * FROM movies ORDER BY rating DESC')
     movies = db.cursor.fetchall()
     
     if not movies:
         await query.edit_message_text(
-            "No movies found! 😢",
+            "No movies found!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')
+                InlineKeyboardButton("🔙 Back", callback_data='back_to_main')
             ]])
         )
         return
     
     keyboard = []
     for movie in movies:
-        # movie: (id, title, description, rating, duration, genre, release_year, image_url, video_url, video_file_id)
-        button_text = f"🎬 {movie[1]} ({movie[6]}) ⭐{movie[3]}"
+        button_text = f"🎬 {movie[1]} ⭐{movie[3]}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f'movie_detail_{movie[0]}')])
     
-    keyboard.append([InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='back_to_main')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("🎬 *Movie List:*", reply_markup=reply_markup, parse_mode='Markdown')
 
-async def show_movie_details(query, movie_id):
-    """Show detailed information about a movie with play option"""
-    db.cursor.execute('SELECT * FROM movies WHERE id = ?', (movie_id,))
-    movie = db.cursor.fetchone()
-    
-    if not movie:
-        await query.edit_message_text("Movie not found!")
-        return
-    
-    # movie: (id, title, description, rating, duration, genre, release_year, image_url, video_url, video_file_id)
-    has_video = movie[8] or movie[9]  # video_url or video_file_id
-    
-    text = (
-        f"🎬 *{movie[1]}*\n\n"
-        f"⭐ *Rating:* {movie[3]}/10\n"
-        f"📅 *Year:* {movie[6]}\n"
-        f"🎭 *Genre:* {movie[5]}\n"
-        f"⏱️ *Duration:* {movie[4]} minutes\n\n"
-        f"📝 *Description:*\n{movie[2]}"
-    )
-    
-    keyboard = []
-    
-    if has_video:
-        keyboard.append([InlineKeyboardButton("▶️ WATCH MOVIE", callback_data=f'play_movie_{movie_id}')])
-    
-    keyboard.extend([
-        [InlineKeyboardButton("🔙 Back to Movies", callback_data='main_movie')],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
-    ])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def play_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Play a movie"""
-    query = update.callback_query
-    await query.answer()
-    
-    movie_id = int(query.data.split('_')[2])
-    
-    db.cursor.execute('SELECT * FROM movies WHERE id = ?', (movie_id,))
-    movie = db.cursor.fetchone()
-    
-    if not movie:
-        await query.message.reply_text("Movie not found!")
-        return
-    
-    # movie: (id, title, description, rating, duration, genre, release_year, image_url, video_url, video_file_id)
-    title, video_url, video_file_id = movie[1], movie[8], movie[9]
-    
-    caption = f"🎬 *{title}*\n⭐ {movie[3]}/10 | {movie[6]} | {movie[4]} min"
-    
-    try:
-        if video_file_id:
-            await context.bot.send_video(
-                chat_id=query.message.chat_id,
-                video=video_file_id,
-                caption=caption,
-                parse_mode='Markdown',
-                supports_streaming=True
-            )
-        elif video_url:
-            await context.bot.send_video(
-                chat_id=query.message.chat_id,
-                video=video_url,
-                caption=caption,
-                parse_mode='Markdown',
-                supports_streaming=True
-            )
-        else:
-            await query.message.reply_text("Video not available for this movie!")
-    except Exception as e:
-        await query.message.reply_text(f"Error playing movie: {str(e)}")
-
 async def show_tv_shows(query):
-    """Show all TV shows"""
+    """Show TV shows list"""
     db.cursor.execute('SELECT * FROM tv_shows ORDER BY rating DESC')
     shows = db.cursor.fetchall()
     
     if not shows:
         await query.edit_message_text(
-            "No TV shows found! 😢",
+            "No TV shows found!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')
+                InlineKeyboardButton("🔙 Back", callback_data='back_to_main')
             ]])
         )
         return
     
     keyboard = []
     for show in shows:
-        # show: (id, title, description, rating, seasons, episodes_per_season, status, image_url)
         button_text = f"📱 {show[1]} ⭐{show[3]}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f'tv_detail_{show[0]}')])
     
-    keyboard.append([InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='back_to_main')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("📱 *TV Shows List:*", reply_markup=reply_markup, parse_mode='Markdown')
 
-async def show_tv_details(query, show_id):
-    """Show detailed information about a TV show"""
-    db.cursor.execute('SELECT * FROM tv_shows WHERE id = ?', (show_id,))
-    show = db.cursor.fetchone()
+# Function to manually add a Telegram file_id to an episode
+def add_telegram_file_id_manually():
+    """Manually add Telegram file_id to an episode"""
+    print("=== Add Telegram File ID to Episode ===")
     
-    if not show:
-        await query.edit_message_text("TV show not found!")
-        return
+    episode_num = int(input("Enter episode number: "))
+    file_id = input("Enter Telegram file_id: ")
     
-    # show: (id, title, description, rating, seasons, episodes_per_season, status, image_url)
-    total_episodes = show[4] * show[5]
+    # Get One Piece ID
+    db.cursor.execute('SELECT id FROM anime WHERE title = "One Piece"')
+    one_piece_id = db.cursor.fetchone()[0]
     
-    text = (
-        f"📱 *{show[1]}*\n\n"
-        f"⭐ *Rating:* {show[3]}/10\n"
-        f"📊 *Seasons:* {show[4]}\n"
-        f"📺 *Episodes per season:* {show[5]}\n"
-        f"📈 *Total episodes:* {total_episodes}\n"
-        f"📌 *Status:* {show[6]}\n\n"
-        f"📝 *Description:*\n{show[2]}"
-    )
+    # Get episode ID
+    db.cursor.execute('''
+        SELECT id FROM anime_episodes 
+        WHERE anime_id = ? AND episode_number = ?
+    ''', (one_piece_id, episode_num))
+    result = db.cursor.fetchone()
     
-    keyboard = [
-        [InlineKeyboardButton("🔙 Back to TV Shows", callback_data='main_tv')],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    if result:
+        episode_id = result[0]
+        db.update_episode_telegram_file_id(episode_id, file_id)
+        print(f"✅ Added file_id to Episode {episode_num}")
+    else:
+        print(f"❌ Episode {episode_num} not found!")
 
 def main():
-    # Add sample data
+    # Initialize database with episodes
+    generate_one_piece_episodes()
     add_sample_data()
-    
-    # Setup Telegram channels
-    setup_telegram_channels()
-    
-    # Generate One Piece episodes with video sources
-    generate_one_piece_episodes_with_videos()
     
     # Create bot application
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Add handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("upload", upload_episode_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
+    # Handle video uploads
+    application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Add a job to process upload queue every hour (optional)
+    # job_queue = application.job_queue
+    # job_queue.run_repeating(process_upload_queue, interval=3600, first=10)
+    
     # Start the bot
-    print("🎬 Anime/Movie/TV Bot is starting with video playback!")
-    print(f"📺 One Piece: 1155 episodes with multiple video sources")
-    print(f"📱 Telegram channels configured: {len(ONE_PIECE_CHANNELS)}")
+    print("🎬 Anime Bot with Telegram File IDs is starting...")
+    print(f"📺 One Piece: 1155 episodes in database")
+    print("\n📤 To upload videos:")
+    print("1. Place video files in a folder")
+    print("2. Use add_videos_to_upload_queue('/path/to/videos')")
+    print("3. Or use /upload command in Telegram")
+    print("\n⚙️ Don't forget to set your STORAGE_CHANNEL_ID!")
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
