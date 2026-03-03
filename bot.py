@@ -10,7 +10,7 @@ TOKEN = "8074691861:AAFti_NIEmQj3HRwgT8UHSBio4_9qwkDFac"
 ANIME_DATA = {
     "One Piece": {
         "Manga": {
-            "Episode 1": "921260484",
+            "Episode 1": "AAMCAQADGQEAAUO3EGmm6TyVXri5IkhBjK98c_JzdfkiAAKkBQACx7EQRHVKmzYurr41AQAHbQADOgQ",
             "Episode 2": "Link OP Manga 2",
         },
         "Anime": {
@@ -143,6 +143,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
 app.run_polling()
+
 
 
 
