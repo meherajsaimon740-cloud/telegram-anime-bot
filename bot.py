@@ -14,7 +14,7 @@ ANIME_DATA = {
             "Episode 2": "Link OP Manga 2",
         },
         "Anime": {
-            "Episode 1": "https://t.me/Uuhuuuuju_bot?start=BQADAQAD6A0AAhuCOUXNmIeR_tLz4BYE",
+            "Episode 1": "Link OP Anime 1",
             "Episode 2": "Link OP Anime 2",
         },
         "Live Action": {
@@ -122,17 +122,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # ===== SELECT EPISODE =====
-elif data.startswith("ep_"):
-    parts = data.split("_", 3)
-    anime_name = parts[1]
-    category = parts[2]
-    episode = parts[3]
+    elif data.startswith("ep_"):
+        parts = data.split("_", 3)
+        anime_name = parts[1]
+        category = parts[2]
+        episode = parts[3]
 
-    link = ANIME_DATA[anime_name][category][episode]
+        link = ANIME_DATA[anime_name][category][episode]
 
-    await message.reply_text(
-        f"🎬 {anime_name}\n📂 {category}\n📺 {episode}\n\n🔗 {link}"
-    )
+        await message.reply_text(
+            f"🎬 {anime_name}\n📂 {category}\n📺 {episode}\n\n🔗 {link}"
+        )
 
 # ===============================
 # RUN BOT
@@ -142,9 +142,6 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
 app.run_polling()
-
-
-
 
 
 
