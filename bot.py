@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 TOKEN = "8074691861:AAFti_NIEmQj3HRwgT8UHSBio4_9qwkDFac"
 
 # 2. YOUR TELEGRAM USER ID (To use the "Get ID" tool)
-ADMIN_ID = 123456789  # <--- REPLACE THIS WITH YOUR ID
+ADMIN_ID = 7378129112  # <--- REPLACE THIS WITH YOUR ID
 
 # ===============================
 # 🔥 DATABASE (USE FILE IDs HERE)
@@ -14,7 +14,7 @@ ANIME_DATA = {
     "One Piece": {
         "Anime": {
             # Send a video to your bot to get these long ID strings!
-            "Episode 1": "BAACAgIAAxkBAA...", 
+            "Episode 1": "921260484", 
             "Episode 2": "BAACAgIAAxkBAA...",
         },
         "Manga": {
@@ -128,5 +128,6 @@ app.add_handler(MessageHandler(filters.VIDEO | filters.DOCUMENT, get_file_id))
 
 print("Bot is running...")
 app.run_polling()
+
 
 
