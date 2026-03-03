@@ -1,7 +1,8 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-TOKEN = "8074691861:AAFti_NIEmQj3HRwgT8UHSBio4_9qwkDFac"
+import os
+TOKEN = os.getenv("TOKEN")
 
 # ===============================
 # 🔥 DATABASE (EDIT ONLY THIS)
@@ -142,3 +143,4 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
 app.run_polling()
+
